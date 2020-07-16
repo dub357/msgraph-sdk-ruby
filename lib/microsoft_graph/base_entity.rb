@@ -50,7 +50,8 @@ class MicrosoftGraph
 
     def fetch
       @persisted = true
-      initialize_serialized_properties(graph.service.get(path)[:attributes])
+      response = graph.service.get(path)
+      initialize_serialized_properties(response[:attributes])
     end
 
     def persisted?
@@ -101,7 +102,8 @@ class MicrosoftGraph
 
     def get(property_name)
       if uncached_property?(property_name) && graph
-        initialize_serialized_properties(graph.service.get(path, property_name.to_s)[:attributes], true)
+        response = graph.service.get(path, property_name.to_s)
+        initialize_serialized_properties(response[:attributes], true)
         super
       else
         super

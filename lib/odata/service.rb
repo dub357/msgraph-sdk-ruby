@@ -2,6 +2,7 @@ module OData
   class Service
     attr_reader :base_url
     attr_reader :metadata
+    attr_writer :auth_callback
 
     def initialize(options = {}, &block)
       @api_version   = {
@@ -14,10 +15,9 @@ module OData
       @metadata      = fetch_metadata
       populate_types_from_metadata
     end
-
-    def namespace
-      schema_defintion = metadata.xpath("//Schema") && metadata.xpath("//Schema").first
-      schema_defintion["Namespace"] if schema_defintion
+    
+    def release_metadata
+      @metadata = nil
     end
 
     def inspect
@@ -82,22 +82,40 @@ module OData
       req.perform
     end
 
+    def namespaces
+      @namespaces ||= begin
+        nspaces = []
+        metadata.xpath("//Schema").map do |schema|
+          nspaces << {namespace: schema["Namespace"], alias: schema["Alias"]}
+        end
+        nspaces
+      end
+    end
+    
     def complex_types
       @complex_types ||= metadata.xpath("//ComplexType").map do |complex_type|
+        schema_node = complex_type.parent
+        raise MicrosoftGraph::NonNullableError("No schema node for #{complex_type}") if schema_node.nil? || schema_node.name != "Schema"
+        namespace = schema_node["Namespace"]
+        base_type = schema_type(schema_node, complex_type["BaseType"])
         @type_name_map["#{namespace}.#{complex_type["Name"]}"] = ComplexType.new(
           name:                  "#{namespace}.#{complex_type["Name"]}",
-          base_type:             complex_type["BaseType"],
+          base_type:             base_type,
           service:               self,
         )
       end
     end
-
+    
     def entity_types
       @entity_types ||= metadata.xpath("//EntityType").map do |entity|
+        schema_node = entity.parent
+        raise MicrosoftGraph::NonNullableError("No schema node for #{entity}") if schema_node.nil? || schema_node.name != "Schema"
+        namespace = schema_node["Namespace"]
+        base_type = schema_type(schema_node, entity["BaseType"])
         options = {
           name:                  "#{namespace}.#{entity["Name"]}",
           abstract:              entity["Abstract"] == "true",
-          base_type:             entity["BaseType"],
+          base_type:             base_type,
           open_type:             entity["OpenType"] == "true",
           has_stream:            entity["HasStream"] == "true",
           service:               self,
@@ -108,6 +126,9 @@ module OData
 
     def enum_types
       @enum_types ||= metadata.xpath("//EnumType").map do |type|
+        schema_node = type.parent
+        raise "no schema node #{schema_node.name}" if schema_node.name != "Schema"
+        namespace = schema_node["Namespace"]
         members = type.xpath("./Member").map do |m, i|
           value = m['Value'] && m['Value'].to_i || i
           {
@@ -143,15 +164,25 @@ module OData
         "Edm.Stream"         => OData::StreamType.new,
         "Edm.String"         => OData::StringType.new,
         "Edm.Boolean"        => OData::BooleanType.new,
-        "Edm.DateTimeOffset" => OData::DateTimeOffsetType.new
+        "Edm.DateTimeOffset" => OData::DateTimeOffsetType.new,
+        "Edm.Duration"       => OData::DurationType.new,
+        "Edm.TimeOfDay"      => OData::TimeOfDayType.new,
+        "Edm.Byte"           => OData::ByteType.new,
+        "Edm.SByte"          => OData::SByteType.new,
+        "Edm.Decimal"        => OData::DecimalType.new,
+        "Edm.Single"         => OData::SingleType.new,
       )
     end
 
     def singletons
-      metadata.xpath("//Singleton").map do |singleton|
+      @singletons ||= metadata.xpath("//Singleton").map do |singleton|
+        schema_node = singleton.parent.parent
+        raise MicrosoftGraph::NonNullableError("No schema node for #{singleton}") if schema_node.nil? || schema_node.name != "Schema"
+        namespace = schema_node["Namespace"]
+        type = schema_type(schema_node, singleton["Type"])
         Singleton.new(
           name:    singleton["Name"],
-          type:    singleton["Type"],
+          type:    type,
           service: self
         )
       end
@@ -174,7 +205,11 @@ module OData
         singular, segments = segments_from_odata_context_field(context)
         first_entity_type = get_type_by_name("Collection(#{entity_set_by_name(segments.shift).member_type})")
         entity_type = segments.reduce(first_entity_type) do |last_entity_type, segment|
-          last_entity_type.member_type.navigation_property_by_name(segment).type
+          if last_entity_type.is_a?(CollectionType)
+            last_entity_type.member_type.navigation_property_by_name(segment).type
+          else
+            last_entity_type
+          end
         end
         singular && entity_type.respond_to?(:member_type) ? entity_type.member_type : entity_type
       end
@@ -192,10 +227,14 @@ module OData
       raw_type_name = remove_namespace(type_name)
       type_definition = metadata.xpath("//EntityType[@Name='#{raw_type_name}']|//ComplexType[@Name='#{raw_type_name}']")
       type_definition.xpath("./Property").map do |property|
+        schema_node = property.parent.parent
+        raise MicrosoftGraph::NonNullableError("No schema node for #{property}") if schema_node.nil? || schema_node.name != "Schema"
+        namespace = schema_node["Namespace"]
+        type = schema_type(schema_node, property["Type"])
         options = {
           name:      property["Name"],
           nullable:  property["Nullable"] != "false",
-          type:      get_type_by_name(property["Type"]),
+          type:      get_type_by_name(type),
         }
         OData::Property.new(options)
       end
@@ -205,10 +244,14 @@ module OData
       raw_type_name = remove_namespace(type_name)
       type_definition = metadata.xpath("//EntityType[@Name='#{raw_type_name}']|//ComplexType[@Name='#{raw_type_name}']")
       type_definition.xpath("./NavigationProperty").map do |property|
+        schema_node = property.parent.parent
+        raise MicrosoftGraph::NonNullableError("No schema node for #{property}") if schema_node.nil? || schema_node.name != "Schema"
+        namespace = schema_node["Namespace"]
+        type = schema_type(schema_node, property["Type"])
         options = {
           name:            property["Name"],
           nullable:        property["Nullable"] != "false",
-          type:            get_type_by_name(property["Type"]),
+          type:            get_type_by_name(type),
           contains_target: property["ContainsTarget"],
           partner:         property["Partner"],
         }
@@ -228,7 +271,7 @@ module OData
       [singular, segments]
     end
 
-    def populate_types_from_metadata
+    def populate_types_from_metadata      
       enum_types
       populate_primitive_types
       complex_types
@@ -249,30 +292,41 @@ module OData
     end
 
     def build_collection(collection_name)
+      raise TypeError.new("#{collection_name} is not a collection type") unless collection_name.start_with?("Collection(")
       member_type_name = collection_name.gsub(/Collection\(([^)]+)\)/, "\\1")
       CollectionType.new(name: collection_name, member_type: @type_name_map[member_type_name])
     end
 
     def build_operation(operation_xml)
+      schema_node = operation_xml.parent
+      raise MicrosoftGraph::NonNullableError("No schema node for #{operation_xml}") if schema_node.nil? || schema_node.name != "Schema"
+      namespace = schema_node["Namespace"]
       binding_type = if operation_xml["IsBound"] == "true"
-        type_name = operation_xml.xpath("./Parameter[@Name='bindingParameter']|./Parameter[@Name='bindingparameter']").first["Type"]
-        get_type_by_name(type_name)
+        binding_param = operation_xml.xpath("./Parameter[@Name='bindingParameter']|./Parameter[@Name='bindingparameter']").first
+        if binding_param.present? 
+          type = schema_type(schema_node, binding_param["Type"])
+          get_type_by_name(type)
+        else 
+          nil
+        end
       end
       entity_set_type = if operation_xml["EntitySetType"]
         entity_set_by_name(operation_xml["EntitySetType"])
       end
       parameters = operation_xml.xpath("./Parameter").inject([]) do |result, parameter|
         unless parameter["Name"] == 'bindingParameter'
+          type = schema_type(schema_node, parameter["Type"])
           result.push({
             name:     parameter["Name"],
-            type:     get_type_by_name(parameter["Type"]),
+            type:     get_type_by_name(type),
             nullable: parameter["Nullable"],
           })
         end
         result
       end
       return_type = if return_type_node = operation_xml.xpath("./ReturnType").first
-        get_type_by_name(return_type_node["Type"])
+        type = schema_type(schema_node, return_type_node["Type"])
+        get_type_by_name(type)
       end
 
       options = {
@@ -286,7 +340,25 @@ module OData
     end
 
     def remove_namespace(name)
-      name.gsub("#{namespace}.", "")
+      name.gsub(/\w+\./, "")
+    end
+    
+    def schema_type(schema_node, type_name)
+      if type_name.present? && schema_node.present?
+        namespace = schema_node["Namespace"]
+        namespace_alias = schema_node["Alias"]     
+        if namespace_alias.present? && (type_name.start_with?(namespace_alias) || type_name.start_with?("Collection(#{namespace_alias}."))
+          return type_name.gsub("#{namespace_alias}.", "#{namespace}.") 
+        end
+        namespaces.each do |nspace|
+          namespace = nspace[:namespace]
+          namespace_alias = nspace[:alias]
+          if namespace_alias.present? && (type_name.start_with?(namespace_alias) || type_name.start_with?("Collection(#{namespace_alias}."))
+            return type_name.gsub("#{namespace_alias}.", "#{namespace}.") 
+          end
+        end
+      end
+      type_name
     end
   end
 end

@@ -12,7 +12,8 @@ Gem::Specification.new do |spec|
   spec.summary       = "Ruby SDK for Microsoft Graph"
   spec.homepage      = "https://graph.microsoft.io"
 
-  spec.files         = `git ls-files -z`.split("\x0").reject { |f| f.match(%r{^(test|spec|features)/}) }
+  #spec.files         = `git ls-files -z`.split("\x0").reject { |f| f.match(%r{^(test|spec|features)/}) }
+  spec.files         = Dir[File.join(File.dirname(__FILE__), '**', '*')].reject { |f| f.match(%r{^(test|spec|features)/}) }
   spec.bindir        = "exe"
   spec.executables   = spec.files.grep(%r{^exe/}) { |f| File.basename(f) }
   spec.require_paths = ["lib"]

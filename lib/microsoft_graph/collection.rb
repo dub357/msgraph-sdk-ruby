@@ -6,7 +6,7 @@ class MicrosoftGraph
     extend Forwardable
 
     attr_accessor :graph
-
+    
     def_delegators :values, :size, :length, :include?, :empty?, :[]
 
     def initialize(type, initial_values = [])
@@ -65,7 +65,11 @@ class MicrosoftGraph
         end
       end
     end
-
+    
+    def to_json(options = {})
+      as_json.to_json
+    end
+  
     def new(attributes = {})
       klass = MicrosoftGraph::ClassBuilder.get_namespaced_class(@type.member_type.name)
       if klass

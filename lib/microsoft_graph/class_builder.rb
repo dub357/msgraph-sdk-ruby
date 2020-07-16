@@ -4,7 +4,6 @@ class MicrosoftGraph
 
     def self.load!(service)
       if !@@loaded
-        @service_namespace = service.namespace
         service.entity_types.each do |entity_type|
           create_class! entity_type
         end
@@ -51,6 +50,18 @@ class MicrosoftGraph
           end
         end
 
+        #eager load stuff that depends on metadata so we dont hold a reference to a large metadata file
+        service.singletons
+        service.complex_types.each do |ct|
+          ct.properties
+        end
+        service.entity_types.each do |et|
+          et.properties
+          et.navigation_properties
+        end
+        service.release_metadata
+        ####
+        
         @@loaded = true
       end
     end
@@ -61,8 +72,8 @@ class MicrosoftGraph
 
     private
 
-    def remove_service_namespace(name)
-      name.gsub("#{@service_namespace}.", "")
+    def self.remove_service_namespace(name)
+      name.start_with?("Edm") ? name : name.gsub(/\w+\./, "")
     end
 
     def self.create_class!(type)
@@ -80,10 +91,10 @@ class MicrosoftGraph
 
     def self.add_graph_association!(entity_set)
       klass = get_namespaced_class(entity_set.member_type)
-      resource_name = entity_set.name.gsub("#{@service_namespace}.", "")
+      resource_name = remove_service_namespace(entity_set.name)
       odata_collection =
         OData::CollectionType.new(member_type: klass.odata_type, name: entity_set.name)
-      MicrosoftGraph.send(:define_method, resource_name) do
+      MicrosoftGraph.send(:define_method, OData.convert_to_snake_case(resource_name)) do
         @association_collections[entity_set.name] ||=
           MicrosoftGraph::CollectionAssociation
             .new(
@@ -151,6 +162,7 @@ class MicrosoftGraph
     end
 
     def self.add_function_method!(function)
+      return unless function.binding_type.present?
       klass = get_namespaced_class(function.binding_type.name)
       klass.class_eval do
         define_method(OData.convert_to_snake_case(function.name).to_sym) do |params={}|
@@ -172,6 +184,7 @@ class MicrosoftGraph
     end
 
     def self.add_action_method!(action)
+      return unless action.binding_type.present?
       klass = get_namespaced_class(action.binding_type.name)
       klass.class_eval do
         define_method(OData.convert_to_snake_case(action.name).to_sym) do |args={}|
@@ -190,7 +203,7 @@ class MicrosoftGraph
     end
 
     def self.classify(name)
-      raw_name = name.gsub("#{@service_namespace}.", "")
+      raw_name = remove_service_namespace(name)
       raw_name.to_s.slice(0, 1).capitalize + raw_name.to_s.slice(1..-1)
     end
 

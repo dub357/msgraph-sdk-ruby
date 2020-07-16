@@ -2,7 +2,7 @@ class MicrosoftGraph
   class CollectionAssociation < Collection
     attr_reader :type
     attr_reader :parent
-
+    
     def initialize(options = {})
       @type            = options[:type]
       @graph           = options[:graph]
@@ -34,6 +34,7 @@ class MicrosoftGraph
     end
 
     def find(id)
+    puts "!!!!FIND"
       if response = graph.service.get("#{path}/#{URI.escape(id.to_s)}")
         klass = if member_type = specified_member_type(response)
           ClassBuilder.get_namespaced_class(response)
@@ -52,11 +53,16 @@ class MicrosoftGraph
     end
 
     def path
-      if parent && parent.path
-        "#{parent.path}/#{@resource_name}"
-      else
+      puts "!!!!!PATH #{type} #{type.name} #{type.member_type.name} #{@resource_name} #{parent} #{parent.try(:name)}"
+      if !parent
         @resource_name
-      end
+      else
+        if type.is_a?(OData::CollectionType) && type.member_type.name == "microsoft.graph.driveItem" && parent.is_a?(DriveItem)
+          "#{parent.parent.path}/#{parent.name}/#{@resource_name}"
+        else
+          "#{parent.path}/#{@resource_name}"
+        end
+      end      
     end
 
     def query_path
@@ -183,6 +189,15 @@ class MicrosoftGraph
       fetch_next_page
     end
 
+    def loaded?
+      @loaded
+    end
+    
+    def as_json(options = {})
+      reload! unless loaded?
+      super
+    end
+    
     private
 
     def last?
@@ -194,7 +209,9 @@ class MicrosoftGraph
 
       result =
         begin
-          @graph.service.get(@next_link)
+        puts "!!!!FETCH_NEXT_PAGE"
+          response = @graph.service.get(@next_link)
+          response
         rescue OData::ClientError => e
           if matches = /Unsupported sort property '([^']*)'/.match(e.message)
             raise MicrosoftGraph::TypeError.new("Cannot sort by #{matches[1]}")
