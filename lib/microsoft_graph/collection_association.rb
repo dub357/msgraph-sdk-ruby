@@ -34,7 +34,6 @@ class MicrosoftGraph
     end
 
     def find(id)
-    puts "!!!!FIND"
       if response = graph.service.get("#{path}/#{URI.escape(id.to_s)}")
         klass = if member_type = specified_member_type(response)
           ClassBuilder.get_namespaced_class(response)
@@ -53,7 +52,6 @@ class MicrosoftGraph
     end
 
     def path
-      puts "!!!!!PATH #{type} #{type.name} #{type.member_type.name} #{@resource_name} #{parent} #{parent.try(:name)}"
       if !parent
         @resource_name
       else
@@ -209,7 +207,6 @@ class MicrosoftGraph
 
       result =
         begin
-        puts "!!!!FETCH_NEXT_PAGE"
           response = @graph.service.get(@next_link)
           response
         rescue OData::ClientError => e
